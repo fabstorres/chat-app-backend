@@ -1,11 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { ChatClient, ChatLobby } from './chat.types';
+import { ChatClient, ChatEvent, ChatLobby, ChatMessage } from './chat.types';
+import { Observable } from 'rxjs';
 
 @Injectable()
 export class ChatService {
   private lobbies: Map<string, ChatLobby> = new Map();
   private users: Map<string, ChatClient> = new Map();
-
+  private streams: Map<string, Set<(data: ChatEvent) => void>> = new Map();
   createUser(displayName: string) {
     const uuid = crypto.randomUUID();
     const user: ChatClient = { id: uuid, name: displayName };
@@ -21,13 +22,12 @@ export class ChatService {
     return Array.from(this.users, ([k, v]) => ({
       id: k,
       name: v.name,
-      connected: !!v.res,
     }));
   }
 
   createLobby() {
     const lobby: ChatLobby = { clients: [], messages: [] };
-    const room = crypto.randomUUID().slice(4);
+    const room = crypto.randomUUID().slice(0, 4);
     this.lobbies.set(room, lobby);
     return room;
   }
@@ -50,6 +50,31 @@ export class ChatService {
     }
     room.clients.push(user);
     return { ok: true, err: null };
+  }
+
+  registerConnection(room: string) {
+    if (!this.streams.has(room)) {
+      this.streams.set(room, new Set());
+    }
+
+    return new Observable<ChatEvent>((observer) => {
+      const send = (data: ChatEvent) => observer.next(data);
+      const roomSet = this.streams.get(room)!;
+
+      roomSet.add(send);
+
+      const cleanup = () => roomSet.delete(send);
+      return cleanup;
+    });
+  }
+
+  broadcast(room: string, payload: ChatEvent) {
+    const roomSet = this.streams.get(room);
+    if (!roomSet) return;
+
+    for (const send of roomSet) {
+      send(payload);
+    }
   }
 
   listLobbies() {
@@ -78,6 +103,12 @@ export class ChatService {
       id: user.id,
       name: user.name,
       content: message,
+    });
+
+    this.broadcast(roomCode, {
+      type: 'message',
+      room: roomCode,
+      payload: { id: userId, name: user.name, content: message },
     });
 
     return { ok: true };

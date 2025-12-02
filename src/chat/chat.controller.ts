@@ -1,5 +1,7 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Sse } from '@nestjs/common';
 import { ChatService } from './chat.service';
+import { map, Observable } from 'rxjs';
+import { ChatEvent } from './chat.types';
 
 @Controller('chat')
 export class ChatController {
@@ -26,6 +28,16 @@ export class ChatController {
     @Body('message') message: string,
   ) {
     return this.chatService.sendMessage(room, userId, message);
+  }
+
+  @Sse(':room')
+  connect(@Param('room') room: string) {
+    return this.chatService.registerConnection(room).pipe(
+      map((event) => ({
+        type: event.type,
+        data: event,
+      })),
+    );
   }
 
   @Get('ping')
