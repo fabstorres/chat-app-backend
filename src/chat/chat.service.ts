@@ -1,12 +1,17 @@
 import { Injectable } from '@nestjs/common';
-import { ChatClient, ChatEvent, ChatLobby, ChatMessage } from './chat.types';
 import { Observable } from 'rxjs';
+import { ChatClient, ChatEvent, ChatLobby, ChatMessage } from './chat.types';
 
 @Injectable()
 export class ChatService {
   private lobbies: Map<string, ChatLobby> = new Map();
   private users: Map<string, ChatClient> = new Map();
+
+  // room -> set of "send" functions
   private streams: Map<string, Set<(data: ChatEvent) => void>> = new Map();
+
+  // ---------- Users ----------
+
   createUser(displayName: string) {
     const uuid = crypto.randomUUID();
     const user: ChatClient = { id: uuid, name: displayName };
@@ -24,6 +29,8 @@ export class ChatService {
       name: v.name,
     }));
   }
+
+  // ---------- Lobbies ----------
 
   createLobby() {
     const lobby: ChatLobby = { clients: [], messages: [] };
@@ -52,31 +59,6 @@ export class ChatService {
     return { ok: true, err: null };
   }
 
-  registerConnection(room: string) {
-    if (!this.streams.has(room)) {
-      this.streams.set(room, new Set());
-    }
-
-    return new Observable<ChatEvent>((observer) => {
-      const send = (data: ChatEvent) => observer.next(data);
-      const roomSet = this.streams.get(room)!;
-
-      roomSet.add(send);
-
-      const cleanup = () => roomSet.delete(send);
-      return cleanup;
-    });
-  }
-
-  broadcast(room: string, payload: ChatEvent) {
-    const roomSet = this.streams.get(room);
-    if (!roomSet) return;
-
-    for (const send of roomSet) {
-      send(payload);
-    }
-  }
-
   listLobbies() {
     return Array.from(this.lobbies, ([k, v]) => ({
       room: k,
@@ -92,24 +74,87 @@ export class ChatService {
     return { ok: true, err: null };
   }
 
+  // ---------- SSE / Streaming ----------
+
+  // Called when a client connects to /chat/:room via SSE
+  registerConnection(room: string): Observable<ChatEvent> {
+    if (!this.streams.has(room)) {
+      this.streams.set(room, new Set());
+    }
+
+    console.log('[backend] registerConnection for room', JSON.stringify(room));
+
+    return new Observable<ChatEvent>((observer) => {
+      console.log('[backend] new SSE observer for room', JSON.stringify(room));
+
+      const send = (data: ChatEvent) => {
+        console.log(
+          '[backend] sending event to observer for room',
+          JSON.stringify(room),
+          data,
+        );
+        observer.next(data);
+      };
+
+      const roomSet = this.streams.get(room)!;
+      roomSet.add(send);
+
+      // Cleanup when client disconnects
+      return () => {
+        console.log(
+          '[backend] cleanup SSE observer for room',
+          JSON.stringify(room),
+        );
+        roomSet.delete(send);
+      };
+    });
+  }
+
+  private broadcast(room: string, payload: ChatEvent) {
+    console.log('[backend] broadcast to room', JSON.stringify(room), payload);
+    const roomSet = this.streams.get(room);
+    console.log(
+      '[backend] roomSet size for',
+      JSON.stringify(room),
+      roomSet ? roomSet.size : 'none',
+    );
+    if (!roomSet) return;
+
+    for (const send of roomSet) {
+      send(payload);
+    }
+  }
+
+  // ---------- Messages ----------
+
   sendMessage(roomCode: string, userId: string, message: string) {
+    console.log('[backend] sendMessage', { roomCode, userId, message });
+
     const room = this.lobbies.get(roomCode);
     if (!room) return { ok: false, err: 'Lobby does not exist' };
 
     const user = this.users.get(userId);
     if (!user) return { ok: false, err: 'User does not exist' };
 
-    room.messages.push({
+    const chatMessage: ChatMessage = {
       id: user.id,
       name: user.name,
       content: message,
-    });
+    };
 
-    this.broadcast(roomCode, {
+    room.messages.push(chatMessage);
+
+    const event: ChatEvent = {
       type: 'message',
       room: roomCode,
-      payload: { id: userId, name: user.name, content: message },
-    });
+      payload: {
+        id: user.id,
+        name: user.name,
+        content: message,
+      },
+    };
+
+    this.broadcast(roomCode, event);
 
     return { ok: true };
   }
